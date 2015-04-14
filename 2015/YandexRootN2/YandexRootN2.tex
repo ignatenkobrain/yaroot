@@ -1,0 +1,489 @@
+\documentclass[a4paper,10pt]{report}
+\usepackage[T1,T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{minted}
+\usepackage[colorlinks=true, linkcolor=blue, urlcolor=blue]{hyperref}
+\usepackage[cm]{fullpage}
+
+\makeatletter
+\newcommand{\minted@write@detok}[1]{%
+  \immediate\write\FV@OutFile{\detokenize{#1}}}%
+
+\newcommand{\minted@FVB@VerbatimOut}[1]{%
+  \@bsphack
+  \begingroup
+    \FV@UseKeyValues
+    \FV@DefineWhiteSpace
+    \def\FV@Space{\space}%
+    \FV@DefineTabOut
+    %\def\FV@ProcessLine{\immediate\write\FV@OutFile}% %Old, non-Unicode version
+    \let\FV@ProcessLine\minted@write@detok %Patch for Unicode
+    \immediate\openout\FV@OutFile #1\relax
+    \let\FV@FontScanPrep\relax
+%% DG/SR modification begin - May. 18, 1998 (to avoid problems with ligatures)
+    \let\@noligs\relax
+%% DG/SR modification end
+    \FV@Scan}
+    \let\FVB@VerbatimOut\minted@FVB@VerbatimOut
+
+\renewcommand\minted@savecode[1]{
+  \immediate\openout\minted@code\jobname.pyg
+  \immediate\write\minted@code{\expandafter\detokenize\expandafter{#1}}%
+  \immediate\closeout\minted@code}
+\makeatother
+
+\title{Yandex.Root \#2}
+\author{Igor Gnatenko (Linuxorgru)}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\begin{abstract}
+\end{abstract}
+
+\part{Приготовления и запуск}
+
+Сразу редактируем grub cmdline, добавляя init=/bin/bash. Запускаем. Не работает ввод (или через раз, у кого как).
+Втыкаем в параметры загрузки, убираем странный \textit{vconsole.keymap=us}, загружаемся, УРА. Перемонтируем в rw,
+меняем пароль руту. Запускаем. При попытке логина SELinux блокирует доступ к /etc/shadow :( Дальше мнения расходятся,
+кто-то просто выключил селинукс (\textit{selinux=0} в grub), кто-то запустил переразметку (\textit{touch /.autorelabel}).
+По поводу firewall мнения опять разошлись, кто-то отключил firewalld, кто-то настроил ;).
+\newline
+Дальше как обычно, \textit{yum install wireshark tcpdump bind-utils screen}.
+\newline
+Полчаса убили на развёртывание общей VM и выкачивание ssh ключей.
+
+\part{Задачи}
+
+\chapter{Echo}
+Set up an echo server on port 2000.
+\newline\newline
+У яндекса в течении 2х часов то работало, то не работало. Никаких пакетов не слышали. Tailgunner выдал идею, что возможно
+приходят sctp пакеты. Запускаем \textit{tshark sctp}. Тишина. Потом, когда VPN стабилизировался, побежали sctp пакетики.
+Стали искать SCTP Echo Server. Delirium нагуглил. Запустили. Не засчитывает потому, что в это время пытаемся настроить
+DNS и на одной из задач он адово виснет. Пришлось поднять на локалхосте сервер и засчитано.
+
+\chapter{Git}
+Set up git-server with access via http://yandex:root@your\_ip/log.git.
+\newline
+If someone create a file with .appendonly extention, the only opperation than allowed for such is file is append.
+\newline\newline
+Изначально в задании было сказано про расширение ".append", но описание задания изменилось, что очень огорчило.
+Но проверочный бот от Яндекса проверял не ".append" или ".appendonly", а ".ao". Недоработка или задумка?
+\begin{minted}[fontsize=\scriptsize]{text}
+# yum install git nginx fcgi-devel spawn-fcgi -y
+# git clone git://github.com/gnosek/fcgiwrap.git
+# cd fcgiwrap
+# autoreconf -i
+# ./configure
+# make
+# cp fcgiwrap /usr/local/bin/
+# vi /etc/nginx/nginx.conf
+# mkdir /srv/git
+# cd /srv/git/
+# git init --bare --shared log.git
+# chown -R nginx:nginx log.git
+# vi log.git/hooks/pre-receive
+# chmod +x log.git/hooks/pre-receive
+# vi ~/fcgi.sh
+# ~/fcgi.sh start
+# systemctl start nginx
+\end{minted}
+\begin{listing}[H]
+  \inputminted[linenos=true, fontsize=\scriptsize, samepage=true]{bash}{pre-receive}
+  \caption{pre-receive}
+  \label{lst:pre-receive}
+
+  \begin{minted}[fontsize=\scriptsize]{text}
+  root /srv/git/;
+  location ~ ^/([^/]+\.git)(/.*|$) {
+          include fastcgi_params;
+
+          fastcgi_param PATH_INFO $uri;
+          fastcgi_param REMOTE_USER $remote_user;
+          fastcgi_param SCRIPT_FILENAME /usr/libexec/git-core/git-http-backend;
+          fastcgi_param GIT_PROJECT_ROOT $document_root;
+          fastcgi_param GIT_HTTP_EXPORT_ALL "";
+
+          fastcgi_pass unix:/var/run/git-fcgi.sock
+  }
+  \end{minted}
+  \caption{nginx.conf}
+  \label{lst:nginx.conf}
+\end{listing}
+\begin{listing}[H]
+  \inputminted[linenos=true, fontsize=\tiny, samepage=true]{bash}{fcgi.sh}
+  \caption{fcgi.sh}
+  \label{lst:fcgi.sh}
+\end{listing}
+Делал это всё realloc. Общую виртуалку как-то испоганили, пришлось на локалхосте поднимать и заново всё делать.
+\begin{minted}[fontsize=\scriptsize]{text}
+Output: Error: [Errno 13] Permission denied: '/root'
+\end{minted}
+При этом всё работало, но у Яндекса снова начались проблемы с VPN и game. Потеряли полтора часа из-за этого.
+
+\chapter{Mail}
+\label{ch:mail}
+Set up mail server. SMTP and IMAP (with SSL)
+\newline
+We will create new mail users using login 'amu' and cmd
+sudo -n amu \$username \$password
+\newline\newline
+\textbf{router}:
+\newline
+\textbf{ВАЖНО}: задача из серии "хочу чтобы всё было хорошо и ещё мир во всём мире. детали сам придумаешь". Приведённое решение кривое и уязвимое, т.к. цель была - угадать, какие требования робот-проверяльщик предъявляет к сервису. Не надо бездумно применять его на реальных серверах.
+\newline\newline
+\begin{enumerate}
+  \item в visudo разрешил безпарольное выполнение команд для группы wheel и отключел требование tty
+  \begin{minted}[fontsize=\scriptsize]{text}
+  #Defaults    requiretty
+  %wheel  ALL=(ALL)       NOPASSWD: ALL
+  \end{minted}
+  З.Ы. а вообще-то это не нужно было :)
+  \item установил postfix ( smtp, smtps ) и dovecot ( pop3, pop3s, imap, imaps ). в конфигах dovecot ( цитирую только то, что менял и что существенно для задачи ) :
+  \begin{minted}[fontsize=\scriptsize]{text}
+  # imap, imaps, pop3, pop3s в конфиге dovecot включены по дефолту
+  # вместо системных пользователей нам нужны виртуальные, существующие только для почтовой системы.
+  # Поэтому вместо PAM используем файл с паролями и фиксированные UID:GID
+  mail_location = maildir:/opt/mail/mail/%n/Maildir
+  passdb {
+    driver = passwd-file
+    args = scheme=CRYPT username_format=%u /opt/mail/db/users.txt
+  }
+  userdb {
+    driver = static
+    args = uid=1003 gid=1003 home=/opt/mail/mail/%u allow_all_users=yes
+  }
+  # принимаем запросы на аутентификацию через unix сокет.
+  # Postfix будет аутентифицировать пользователей через dovecot sasl, используя этот сокет
+  service auth {
+    /etc/dovecot/conf.d/10-master.conf:  unix_listener auth-userdb {
+    }
+    unix_listener /var/spool/postfix/private/auth {
+      mode = 0666
+    }
+  }
+  # самоподписанный сертификат. Как и прошлый раз, 
+  # Subject: C=RU, ST=Moscow, L=Moscow, O=Yandex, OU=Root, CN=10.0.0.91/emailAddress=mail@yandex.com
+  # хотя на этот раз сертификат никто с пристрастием не проверял
+  ssl_cert = </etc/ssl/certs/10.0.0.91.crt
+  ssl_key = </etc/ssl/keys/10.0.0.91.key
+
+  # необходимо для работы postfix LDA. адрес произвольный, главное чтобы почтовая система хоть куда-нибудь успешно доставляла эту почту
+  postmaster_address = root@localhost
+
+  # т.к. робот хочет в т.к. pop3, imap без ssl. Небезопасно
+  disable_plaintext_auth = no
+  login_trusted_networks = 10.0.0.0/16
+  \end{minted}
+  Теперь postfix.  цитаты из main.cf
+  \begin{minted}[fontsize=\scriptsize]{text}
+  # ещё раз, подбирал методом тыка по логам
+  myhostname = davies
+  mydomain = root
+
+  # доставлять будем через virtual транспорт dovecot
+  virtual_mailbox_domains = root, davies.root, root.root
+  virtual_transport = dovecot
+
+  # это для следующей части задания
+  virtual_alias_maps = hash:/etc/postfix/virtual
+
+  # аутентификация через dovecot sasl, через unix сокет
+  smtpd_sasl_type = dovecot
+  smtpd_sasl_path = private/auth
+  smtpd_sasl_auth_enable = yes
+
+  # включаем ssl и tls
+  smtpd_use_tls = yes
+  smtpd_tls_key_file = /etc/ssl/keys/10.0.0.91.key
+  smtpd_tls_cert_file = /etc/ssl/certs/10.0.0.91.crt
+  smtpd_tls_CApath = /etc/ssl/certs
+  smtpd_tls_loglevel = 2
+  smtpd_tls_received_header = yes
+
+  # небезопасно
+  disable_plaintext_auth = no
+
+  # небезопасно! за применение на реальном сервере отрывать руки!
+  # после аутентификации пусть хоть весь яндекс заспамят. Но анонимусы идут лесом. Регистратов-то можно поймать и повесить
+  smtpd_recipient_restrictions =
+          permit_sasl_authenticated
+          reject
+
+  # хм, интересно, что это и зачем я это включил
+  dovecot_destination_recipient_limit = 1
+  \end{minted}
+  Создаём пользователя, который фактически будет владельцем почтовых ящиков. Именно эти UID:GID используются dovecot'ом ( userdb )
+  \begin{minted}[fontsize=\scriptsize]{text}
+  # id fakemailuser
+  uid=1003(fakemailuser) gid=1003(fakemailuser) группы=1003(fakemailuser)
+  \end{minted}
+  Создаём тестового пользователя для ручной проверки через telnet / openssl s\_client
+  \begin{minted}[fontsize=\scriptsize]{text}
+  # doveadm pw -p "password" -s crypt
+  {CRYPT}2e6EW/cpsCaDU
+  # echo 'user:{CRYPT}2e6EW/cpsCaDU' > /opt/mail/db/users.txt 
+  \end{minted}
+  и кодируем их для проверки AUTH PLAIN ( postfix )
+  \begin{minted}[fontsize=\scriptsize]{text}
+  # perl -e 'use MIME::Base64; print encode_base64("\000user\000password");'
+  AHVzZXIAcGFzc3dvcmQ=
+  \end{minted}
+  Проверяем
+  \begin{description}
+    \item[imap] \begin{minted}[fontsize=\scriptsize]{text}
+    telnet localhost 143
+    [...]
+    . login user password 
+    \end{minted}
+    \item[imaps] \begin{minted}[fontsize=\scriptsize]{text}
+    openssl s_client -connect localhost:993
+    [...]
+    . login user password 
+    \end{minted}
+    \item[pop3] \begin{minted}[fontsize=\scriptsize]{text}
+    telnet localhost 110
+    [...]
+    user user
+    [...]
+    pass password
+    \end{minted}
+    \item[pop3s] \begin{minted}[fontsize=\scriptsize]{text}
+    openssl s_client -connect localhost:995
+    [...]
+    user user
+    [...]
+    pass password
+    \end{minted}
+    \item[smtp] \begin{minted}[fontsize=\scriptsize]{text}
+    telnet localhost 25
+    [...]
+    ehlo localhost
+    auth plain AHVzZXIAcGFzc3dvcmQ=
+    \end{minted}
+    \item[smtps] \begin{minted}[fontsize=\scriptsize]{text}
+    openssl s_client -connect localhost:465
+    openssl s_client -connect localhost:25 -starttls smtp
+    [...]
+    ehlo localhost
+    auth plain AHVzZXIAcGFzc3dvcmQ=
+    \end{minted}
+  \end{description}
+  \item Теперь вспоминаем, что робот будет ломиться по ssh для создания пользователей, причём вместо команды будет сразу кидать "login" "password"
+  поэтому пишем скрипт, который назначим ему вместо shell
+  \begin{minted}[fontsize=\scriptsize]{text}
+  # tail -n2 /etc/shells 
+  /usr/local/bin/makemailuser.pl
+  /usr/bin/perl
+  \end{minted}
+  \begin{listing}[H]
+    \inputminted[linenos=true, fontsize=\scriptsize, samepage=true]{perl}{makemailuser.pl}
+    \caption{makemailuser.pl}
+    \label{lst:makemailuser.pl}
+  \end{listing}
+  содержимое /opt/mail/db/users.txt после нескольких запусков game:
+  \begin{minted}[fontsize=\scriptsize]{text}
+  70802fbae2:{CRYPT}dPmSaTyol6BhU
+  e82216943d:{CRYPT}Dmqh9EYmsFNW.
+  [...]
+  cccedc3d60:{CRYPT}jCPOWgEuFPymc
+  \end{minted}
+  содержимое /tmp/amu\_log.txt после нескольких проверок:
+  \begin{minted}[fontsize=\scriptsize]{text}
+  sudo -n iptables -I INPUT -p tcp -m multiport --dports 25,587 -j REJECT >/dev/null 2>/dev/null
+  sudo -n iptables -I INPUT -p tcp -m multiport --dports 25,587 -j REJECT >/dev/null 2>/dev/null
+  [...]
+  sudo -n iptables -I INPUT -p tcp -m multiport --dports 25,587 -j REJECT >/dev/null 2>/dev/null
+  \end{minted}
+\end{enumerate}
+
+\chapter{TwMail}
+Same as "Mail" task, but SMTP and POP3.
+\newline  
+Additionally, the users should be available to receive mail using "@login" address.
+\newline\newline
+\textbf{router}:
+\newline
+smtp и pop3, pop3s уже настроены в предыдущем пункте
+\newline
+сложность именно в том, чтобы принимать почту на некорректные адреса ( кто-нибудь знает - зачем? первый раз вижу такой изврат )
+\newline
+для этого в
+\begin{itemize}
+  \item postfix добавлено virtual\_alias\_maps (\ref{ch:mail})
+  \item в скрипт /usr/local/bin/makemailuser.pl добавлена функция add\_mapping (\ref{ch:mail})
+\end{itemize}
+проверяющий робот тупит и принимает задачу только со второй проверки
+
+\chapter{Exec}
+We have got two very old programs. Run it on the same machine.
+\newline\newline
+Подсказываю delirium'у, где лежат 2 бинарника, дальше он всё делает очень быстро.
+\begin{minted}[fontsize=\scriptsize]{text}
+# cd /opt/archive/
+# file s1 s2
+s1: ELF 32-bit MSB executable, SPARC, ... , not stripped
+s2: ELF 32-bit MSB executable, PowerPC or cisco 4500, ..., not stripped
+# yum install qemu-user
+# screen qemu-sparc s1
+# screen qemu-ppc s2
+\end{minted}
+
+\chapter{DB repl}
+We have got a DB on port 5984. Unfortunately, one day the replication has been broken, and one client write some data to slave DB.
+\newline  
+This is very critical DB, so fix the replication, and save only the last version of each document.
+\newline\newline
+Быстро нагугливаем, что обычно живёт на 5984 порту. Ага, CouchDB. Ставим, чиним права на файлы, стартуем. Долго втыкаем что хотят от нас.
+Пока я занимался жаббером, кочдб тыкали все, кто только дотянулся. Роутер доделывает почту, я присоединяюсь к решению базы.
+Анализирую документы, потому что octocat смерджил мастер/слейв. Вижу, что поле "t" в каждом документе - это UNIX timestamp.
+Подтянулся lumi. Приходит идея, что нужно брать не последний номер документа (id), а смотреть по этому таймштампу. Восстанавливаем оригинальные базы.
+\newline
+Пишу скрипт на питоне, делаем репликацию.
+\newline
+Было сделано последним.
+\begin{listing}[H]
+  \inputminted[linenos=true, fontsize=\scriptsize, samepage=true]{python}{couch-repair.py}
+  \caption{couch-repair.py}
+  \label{lst:couch-repair.py}
+\end{listing}
+\begin{minted}[fontsize=\scriptsize]{text}
+# mkdir /var/log/couchdb
+# chown couchdb:couchdb /var/log/couchdb
+# systemctl start couchdb
+# ./couch-repair.py
+# systemctl stop couchdb
+# cd /var/lib/couchdb/
+# mv w.couch words.couch
+# rm words_slave.couch -f
+# systemctl start couchdb
+# export HOST="http://127.0.0.1:5984"
+# curl -X PUT $HOST/words_slave
+# curl -H "Content-Type: application/json" \
+       -X POST $HOST/_replicate \
+       -d '{"source":"words","target":"http://127.0.0.1:5984/words_slave"}'
+\end{minted}
+
+\chapter{Balancer}
+You have got the daemons on the ports 9001-9005.
+\newline  
+Set up a balancer on port 9000 which will be evenly balance connection to the daemons.
+\newline\newline
+\textbf{tazhate}:
+\newline
+netstat - nlp, ага оно tcp, далее обычный haproxy с тупым и банальным конфигом.
+
+\begin{minted}[fontsize=\scriptsize]{text}
+# yum install haproxy -y
+# vi /etc/haproxy/haproxy.cfg
+# systemctl start haproxy
+\end{minted}
+\begin{listing}[H]
+  \begin{minted}[fontsize=\scriptsize, samepage=true]{text}
+  listen proxy :9000
+        mode tcp
+        option tcplog
+        balance leastconn
+        server demon1 127.0.0.1:9001 check
+        server demon2 127.0.0.1:9002 check
+        server demon3 127.0.0.1:9003 check
+        server demon4 127.0.0.1:9004 check
+        server demon5 127.0.0.1:9005 check
+  \end{minted}
+  \caption{haproxy.cfg}
+  \label{lst:haproxy.cfg}
+\end{listing}
+Зная ключевое слово haproxy задача решается натурально за 5 минут. если бы не глюки яндекса и начальная суматоха...
+
+\chapter{Jabber}
+Some time ago there was a jabber server for root.yandex.net on the machine. Make it work again.
+\newline
+You can find some useful data in /var/lib/ejabberd
+\newline\newline
+Сразу начинаем настраивать bind. В фоне кто-то ставит ejabberd.
+Час пытались настроить зону, валидатор не проходил. Взял зону со своего сервера, конфиг взял дефолтный из пакета.
+OpenVPN отваливается, айпишники меняются, приходится каждый раз править зону :(. Настроили SRV для xmpp-server, xmpp-client - game не проходит.
+Запускаю \textit{tcpdump -v -XX proto udp port 53}, пытаюсь понять. Один из пакетов выглядит так:
+\begin{minted}[fontsize=\footnotesize, samepage=true]{text}
+13:31:54.403522 IP (tos 0x0, ttl 64, id 58620, offset 0, flags [none], proto UDP (17), length 74)
+    10.0.16.1.38146 > 10.0.17.244.domain: [udp sum ok] 36822+ SRV? _jabber._tcp.root.yandex.net. (46)
+        0x0000:  3e80 ee1c 4cf2 5682 683d aab1 0800 4500  >...L.V.h=....E.
+        0x0010:  004a e4fc 0000 4011 5fb2 0a00 1001 0a00  .J....@._.......
+        0x0020:  11f4 9502 0035 0036 7866 8fd6 0100 0001  .....5.6xf......
+        0x0030:  0000 0000 0000 075f 6a61 6262 6572 045f  ......._jabber._
+        0x0040:  7463 7004 726f 6f74 0679 616e 6465 7803  tcp.root.yandex.
+        0x0050:  6e65 7400 0021 0001                      net..!..
+\end{minted}
+Выплёвываю мысль, что SRV запись не та, меняю запись на нужную - всё понеслось. В фоне lumi донастроил ejabberd, но всё равно не работает.
+\begin{minted}[fontsize=\footnotesize, samepage=true]{text}
+$TTL 86400
+@ IN SOA ns.yandex.net. root.yandex.net. (
+        2015040101;
+        86400;
+        7200;
+        2419200;
+        10800;
+)
+
+@                       86400   IN      NS      ns
+root.yandex.net.        86400   IN      A       10.0.34.45
+ns                      86400   IN      A       10.0.34.45
+_xmpp-client._tcp.yandex.net.       86400 IN SRV 5 0 5222 root.yandex.net.
+_xmpp-server._tcp.yandex.net.       86400 IN SRV 5 0 5269 root.yandex.net.
+_xmpp-client._tcp.root.yandex.net.       86400 IN SRV 5 0 5222 root.yandex.net.
+_xmpp-server._tcp.root.yandex.net.       86400 IN SRV 5 0 5269 root.yandex.net.
+_jabber._tcp.root.yandex.net.       86400 IN SRV 5 0 5269 root.yandex.net.
+\end{minted}
+Смотрю конфиг ejabberd - там что-то про ssl. Первая мысль - отключить.
+Комментирую в ямле \textit{module: ejabberd\_c2s}, \textit{starttls: true}. Ребутаем это поделие на эрланге - пройдено.
+ejabberd был взят с офсайта и нагло установлен в /opt/ejabberd \%)
+
+\chapter{Jabber Archive}
+Make all the jabber messages dumped to http://ip/jabber\_archive.txt (any text format)
+\newline\newline
+После поднятия жаббера перемещаемся сюда. anonymous\_sama нашёл модуль \textit{mod\_log\_chat}, который должен был сделать всё что надо.
+\newline
+Lumi пишет конфигт долго и безуспешно пытается откомпилировать модуль.
+\begin{minted}[fontsize=\footnotesize]{text}
+mod_log_chat:
+    path: "/srv/git/jabber_archive.txt"
+    format: text
+\end{minted}
+Казалось бы, 5 минут и решение готово, но оказалось не так всё просто. Нагуглил svn репозиторий с этим модулем и, не прочитав
+ворнинг об устаревании репа, клонирую, компилирую. Подкладываем в ebin/ - падает сервер при запуске =(. И так и сяк, не хочет работать,
+роем гугл, пробуем разное. Ошибка странное, ничего не понятно (никто с эрлангом дела никогда не имел).
+Замечаю ворнинг на сайте проекта и что сейчас нужно использовать git, а не svn репозиторий. Клонирую, компиляю, кладу в ebin,
+сервер запускается. Но при попытке теста через game в error.log появляется
+\begin{minted}[fontsize=\footnotesize]{text}
+2015-04-14 15:17:28.875 [error] <0.460.0>@ejabberd_hooks:run1:335 {{case_clause,{error,enotdir}},[
+{mod_log_chat,write_packet,4,[{file,"mod_log_chat.erl"},{line,146}]},
+{ejabberd_hooks,safe_apply,3,[{file,"src/ejabberd_hooks.erl"},{line,385}]},
+{ejabberd_hooks,run1,3,[{file,"src/ejabberd_hooks.erl"},{line,332}]},
+{ejabberd_c2s,session_established2,2,[{file,"src/ejabberd_c2s.erl"},{line,1299}]},
+{p1_fsm,handle_msg,10,[{file,"src/p1_fsm.erl"},{line,582}]},
+{proc_lib,init_p_do_apply,3,[{file,"proc_lib.erl"},{line,239}]}
+]}
+\end{minted}
+В ejabberd.log:
+\begin{minted}[fontsize=\footnotesize]{text}
+2015-04-14 15:33:21.456 [error] <0.634.0>@mod_log_chat:open_logfile:173 Cannot write into file
+/srv/git/jabber_archive.txt/2015-04-14 alice@root.yandex.net - bob@root.yandex.net.log: enoent
+\end{minted}
+enotdir наводит меня на мысль, что он хочет директорию, а ему суют файл. Меняю в конфиге path на /srv/git/ - УРА! Но не тут то было.
+Яндекс хочет получить сообщения по http://ip/jabber\_archive.txt, а у нас создаётся каждый раз при запуске game
+\textit{2015-04-14 alice@root.yandex.net - bob@root.yandex.net.log}. Решаю симлинком в /srv/git/. nginx уже сервит эту директорию.
+
+\part{Итоги}
+9 место. Огромное спасибо tazhate, madrouter, realloc, lumi, octocat, delirium, anonymous\_sama, всем кого забыл, ну и мне \%)
+\newline\newline
+\begin{tabular}{ | l | l | l | l | l | l | l | l | l | }
+  \hline
+  Echo & Git & Mail & TwMail & Exec & DB repl & Balancer & Jabber & Jabber Archive\\ \hline
+  02:09:29 & 04:13:41 & 06:02:54 & 07:25:07 & 00:45:43 & 08:50:41 & 00:42:44 & 04:53:19 & 06:38:24\\
+  \hline
+\end{tabular}
+\end{document}

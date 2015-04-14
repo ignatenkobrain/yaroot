@@ -1,0 +1,35 @@
+#!/bin/bash
+
+validate_ref2() {
+    oldrev=$(git rev-parse $1)
+    newrev=$(git rev-parse $2)
+    refname="$3"
+
+    LIST=`git diff --name-only $oldrev $newrev | grep -P '^.*\.ao'`
+
+    for file in $LIST; do
+        if  git diff $oldrev $newrev -- $file | grep -v -P '^(---|\+\+\+)' | grep '^-' > /dev/null ; then
+            echo "Only append is allowed for .append!"
+            exit 1
+        fi
+        if  git diff $oldrev $newrev -- $file | grep -v -P '^(---|\+\+\+)' | pcregrep -M '^\+(.*\n)*\s' > /dev/null ; then
+            echo "Only append is allowed for .append!"
+            exit 1
+        fi
+    done
+}
+
+fail=""
+
+if [ -n "$1" -a -n "$2" -a -n "$3" ]; then
+    PAGER= validate_ref2 $2 $3 $1
+else
+    while read oldrev newrev refname
+    do
+        validate_ref2 $oldrev $newrev $refname
+    done
+fi
+
+if [ -n "$fail" ]; then
+    exit $fail
+fi
