@@ -1,0 +1,262 @@
+\documentclass[a4paper,10pt]{report}
+\usepackage[T1,T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{minted}
+\usepackage[colorlinks=true, linkcolor=blue, urlcolor=blue]{hyperref}
+\usepackage[cm]{fullpage}
+
+\makeatletter
+\newcommand{\minted@write@detok}[1]{%
+  \immediate\write\FV@OutFile{\detokenize{#1}}}%
+
+\newcommand{\minted@FVB@VerbatimOut}[1]{%
+  \@bsphack
+  \begingroup
+    \FV@UseKeyValues
+    \FV@DefineWhiteSpace
+    \def\FV@Space{\space}%
+    \FV@DefineTabOut
+    %\def\FV@ProcessLine{\immediate\write\FV@OutFile}% %Old, non-Unicode version
+    \let\FV@ProcessLine\minted@write@detok %Patch for Unicode
+    \immediate\openout\FV@OutFile #1\relax
+    \let\FV@FontScanPrep\relax
+%% DG/SR modification begin - May. 18, 1998 (to avoid problems with ligatures)
+    \let\@noligs\relax
+%% DG/SR modification end
+    \FV@Scan}
+    \let\FVB@VerbatimOut\minted@FVB@VerbatimOut
+
+\renewcommand\minted@savecode[1]{
+  \immediate\openout\minted@code\jobname.pyg
+  \immediate\write\minted@code{\expandafter\detokenize\expandafter{#1}}%
+  \immediate\closeout\minted@code}
+\makeatother
+
+\title{Yandex.Root Final}
+\author{Igor Gnatenko (Linuxorgru)}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\begin{abstract}
+\end{abstract}
+
+\part{Приготовления и запуск}
+
+2 образа. Debian, OpenIndiana. Всё как обычно, меняем пароль руту, грузимся.
+
+\part{Задачи}
+
+\chapter{Backup}
+Our old admin supported small site with some very useful texts. Unfortunately, he quit some time ago and we do not know how to restore the site. Please make it run again with the most recent data available.
+\newline\newline
+\textbf{true\_admin}:
+\newline
+Сразу смотрим ~/.bash\_history пока его не затёрли (HISTSIZE=10!).
+\newline
+Оттуда понятно что бэкапы лежат в /var/backups и так же виден ключ и то что шифровалось через openssl.
+\newline
+Затем export HISTSIZE=10000 иии...
+\newline
+\begin{minted}[fontsize=\scriptsize, samepage=true]{bash}
+cd /var/backups
+KFILE=backup.key
+TMPFILE=/tmp/temp.arch
+echo 27CBB6C8170EF54C3235AF3F8ED2A106 > $KFILE
+
+for f in `ls *encrypted | sort -r`; do
+  newname=`basename $f .encrypted`;
+  openssl aes-128-cbc -d -kfile $KFILE -in $f -out $newname;
+  tar --strip-components=1 -xf $newname root/backup.key
+done
+
+for f in `ls *tgz | sort` ; do tar -xf $f; done
+
+mv usr/ /
+\end{minted}
+
+\chapter{HTTPS MITM}
+We continue with our Internel filtration topic. Now you need to set up HTTP proxy on port 3129 which will intercept all HTTPS traffic coming through and do it properly: we expect the proxied sites to provide valid certificates for their associated host-names. You may sign it with our own MITM certificate authority (the CA key and certificate are available in /root), we will use a client that trusts this CA.
+\newline
+To additionally prove that you are ready to intercept traffic, please substitute the value for Server: header of all requests with the string "root.yandex.com".
+\newline\newline
+Ставим mitmproxy, запускаем и останавливаем для того чтобы сгенерировались сертификаты
+\newline
+потом \textit{cd /root ; cat mitm.key mitm.crt > .mitmproxy/mitmproxy-ca.pem}
+\newline
+Затем:
+\newline
+\begin{listing}[H]
+  \begin{minted}[linenos=true, fontsize=\scriptsize, samepage=true]{python}
+  def response(context, flow):
+      flow.response.headers["Server"] = ["root.yandex.com"]
+  \end{minted}
+  \caption{add\_header.py}
+  \label{lst:add_header.py}
+\end{listing}
+\begin{minted}[fontsize=\scriptsize, samepage=true]{text}
+mitmproxy -p 3129 -s add_header.py
+\end{minted}
+Жмём | и запускаем game
+
+\chapter{CI}
+We got a very old continious integration system (on OpenIndiana) and we want to upgrade it.
+\newline
+Please upgrade project serverMVC to use Docker.
+\newline
+Out checker works with your repo at ssh://root@\$\{YOUR\_IP\}/root/app.git and for start deploy checker will use url: http://\$\{YOUR\_IP\}:8080/hudson/job/serverMVC\_docker/build?delay=0sec
+\newline
+Moreover, checker expects Docker running on \$\{YOUR\_IP\}.
+\newline
+Our id\_rsa.pub:
+\begin{tiny}
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDoGfF7Dvs5H0aeMsfm9MMasUWY12rdphM410FJdJ
+aoAjGFA8X6PeKq06qEbZpbmXRs0Yfrcwn1hRONAQ5PLundgnI/oHxTIQUmj490jpXrKszvcgmynkrl
+FHjHvtfp4ViVOtfmt1byubG9BaFRJe+L3+l7MkAodYyrC93/jisk3xi/veAkuRFa4F7qUioBOuRYXE
+KSg4eF+tMouqbzKoM2O9vsAHrBRaIhV+yTiiDjN2UswzmQl4n4m/wRZ/OKISiewUzoBhf07431dutL
+i3Lpl5IdaNMiYdsi9D8Mgb7N2x4DKZKTXOVnHmMN79yL1u2WUlp3vhWAmz8Af4Sux7jh
+\end{tiny}
+\newline\newline
+
+\chapter{netflow}
+Set up a netflow receiver on port 9996 and make a traffic billing.
+\newline
+For each user you should write bytes count and make it available via http://<your-ip>/billing.html which looks like:
+\newline
+\begin{minted}[fontsize=\scriptsize, samepage=true]{text}
+<tr>
+  <td>IP</td>
+  <td>bytes count</td>
+</tr>
+\end{minted}
+Update period: 1 minute
+\newline
+Sort: by bytes DESC
+\newline\newline
+Ставим flow-tools. Настраиваем. Теряем 3 часа, чтобы понять, что нам нужны только 220.123.31.0/24. Готово.
+\begin{listing}[H]
+  \inputminted[linenos=true, fontsize=\scriptsize, samepage=true]{text}{flow-capture.conf}
+  \caption{flow-capture.conf}
+  \label{lst:flow-capture.conf}
+\end{listing}
+\begin{listing}[H]
+  \inputminted[linenos=true, fontsize=\scriptsize, samepage=true]{text}{report.conf}
+  \caption{report.conf}
+  \label{lst:report.conf}
+\end{listing}
+\begin{listing}[H]
+  \inputminted[linenos=true, fontsize=\scriptsize, samepage=true]{bash}{flowrep.sh}
+  \caption{flowrep.sh}
+  \label{lst:flowrep.sh}
+\end{listing}
+
+\chapter{Repo}
+We got a repositary at /root/repo, but it doesn't work with youm < 3.0.0. Fix it and make aviable via http://<ip>/repo.
+\newline\newline
+Сразу смотрим в ман по createrepo:
+\newline
+The older default was "sha", which is actually "sha1", however explicitly using "sha1" doesn't work on older (3.0.x) versions of yum, you need to specify "sha".
+\newline
+На всякий случай бэкапим. С дуру попробовал пересоздать repodata с указанием алгоритма sha, сломал. Восстановил, открыл руками repomd.xml и поменял тип и хэш-суммы.
+\newline
+\begin{minted}[fontsize=\scriptsize, samepage=true]{bash}
+cd /root/repo/repodata/
+
+for i in *.bz2; do
+  sha_old=$(sha256sum $i);
+  sha_new=$(shasum $i);
+  sed -i -e "s/$sha_old/$sha_new/g" repomd.xml;
+done
+
+for i in *.bz2; do
+  bzcat $i > ${i%.bz2};
+  sha_old=$(sha256sum $i);
+  sha_new=$(shasum $i);
+  sed -i -e "s/$sha_old/$sha_new/g" repomd.xml;
+  rm -f ${i%.bz2};
+done
+
+sed -i -e "s/\"sha256\"/\"sha\"/g" repomd.xml
+\end{minted}
+
+\chapter{Infected binary}
+Your image has been touched by a cracker who replaced one of standard system binaries with his own. We thought that the program contains some secret string and it will output it when properly executed. Please find that string.
+\newline\newline
+Ну это совсем просто. Ищем изменённые бинарники (проверяем чексумму), затем смотрим в него.
+\newline
+\begin{minted}[fontsize=\scriptsize, samepage=true]{bash}
+apt-get install debsums -y
+debsums -a -s
+strings /usr/bin/\[ | more
+\end{minted}
+Ага. Записать строчку в binary.txt и расшарить по http. Готово.
+\newline\newline
+Сделано быстрее всех %)
+
+\chapter{DNS MITM}
+Let's suppose you're an administrator of large corporate network. You have a list of hosts which should be blocked according to the company policy. You decide to set up your DNS server in such a way that it acts as normal DNS server for all the hosts except the ones from this list. For those hosts, it returns the address of itself to all A queries. Later you plan to set up a special web server that displays the page about your company Internet restrictions on the same machine.
+\newline
+Now the task is to set up such DNS server. You should find the list of hosts in /root.
+\newline\newline
+
+\chapter{SVN}
+You have svn repository in /root/repo. Delete (like svn rm) all files which are greater than 5MB in all revisions and make them available via svn://ip/
+\newline
+Big file should be deleted only in the revision when it became >5MB.
+\newline\newline
+К сожалению, мега-супер-пупер-крутой скрипт был утерян ввиду анализа Infected binary через gdb, так что вкратце алгоритм:
+\begin{enumerate}
+  \item Ставим более свежие версии svn и svn-utils из wheezy-backports
+  \item Запускаем svnserve на /root/repo
+  \item Делаем локальный клон через svn co
+  \item Дальше скрипт:
+  \begin{itemize}
+    \item Дампить все ревизии через svn dump (1 - полная, остальные с --incremental)
+    \item Смотреть какой файл превышает 5МиБ через svn ls --verbose
+    \item Добавлять к списку exclude
+    \item Прогонять через svndumpfilter
+  \end{itemize}
+  \item Получили 101 отфильтрованную ревизию
+  \item Теперь через svnadmin create создаём репозиторий и через svn load грузим фильтрованный дамп
+  \item Сервим новый реп
+  \item PROFIT!
+\end{enumerate}
+
+\chapter{NFS}
+Make nfs://10.10.10.11/dir available as http://<yourip>/nfs. Use this credentials user@YA.ROOT:password. NFS server's host name is localhost.
+\newline\newline
+
+\chapter{Nginx Lua}
+We have inherited from previous admin several modules for nginx, you can find it out at /etc/nginx/lua.
+\newline
+No documentation, no examples of configuration files. But we have some examples, how web-server on port 8000 must work:
+\begin{itemize}
+  \item /static/local/jquery.min.js should return content of file /var/www/static/jquery.min.js
+  \item /static/local/<size>/dog.png should return thumbnail of image /var/www/static/dog.png, with width and height limit equals to X. <size> is a verbal description of size ("small", "medium" and so on, full list is unknown). We have values for X for different sizes: 50, 100, 500, 1000, 2000.
+  \item All requests to /static/local/* except requests for css- and js- files, should return error 403 unless user has a special authrization cookie
+  \item Request to /auth/local/jquery.min.js should set authorization cookie with name "auth\_local/jquery.min.js", which is accepted by /static/local/jquery.min.js
+\end{itemize}
+This list is not complete! But it's all we have.
+\newline  
+Don't forget to setup caching. It is said these modules support them.
+\newline\newline
+\begin{listing}[H]
+  \inputminted[linenos=true, fontsize=\scriptsize, samepage=true]{python}{nginx_lua.py}
+  \caption{nginx\_lua.py}
+  \label{lst:nginx_lua.py}
+\end{listing}
+
+\part{Итоги}
+6 место. Огромное спасибо tazhate, madrouter, realloc, lumi, octocat, delirium, anonymous\_sama, trofk, feofan, tailgunner, всем кого забыл, ну и мне \%)
+\newline\newline
+\small 
+\begin{tabular}{ | l | l | l | l | l | l | l | l | l | l | }
+  \hline
+  Backup & HTTPS MITM & CI & netflow & Repo & Infected binary & DNS MITM & SVN & NFS & Nginx Lua\\ \hline
+  01:29:18 & 04:27:47 & 07:01:54 & 05:25:27 & 01:39:15 & 00:18:49 & 01:27:47 & 03:29:41 & 04:52:19 & 07:06:34\\
+  \hline
+\end{tabular}
+\end{document}
