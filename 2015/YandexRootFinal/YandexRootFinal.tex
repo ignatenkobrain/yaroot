@@ -58,15 +58,19 @@ Our old admin supported small site with some very useful texts. Unfortunately, h
 Сразу смотрим ~/.bash\_history пока его не затёрли (HISTSIZE=10!).
 \newline
 Оттуда понятно что бэкапы лежат в /var/backups и так же виден ключ и то что шифровалось через openssl.
+Попутно выясняется что ключ подходит только к первому архиву. А тааам... ключ ко второму архиву в котором...
+ну вы поняли.
 \newline
-Затем export HISTSIZE=10000 иии...
 \newline
 \begin{minted}[fontsize=\scriptsize, samepage=true]{bash}
+HISTSIZE=10000 иии...
 cd /var/backups
 KFILE=backup.key
 TMPFILE=/tmp/temp.arch
+# самый первый ключ из .bash_history
 echo 27CBB6C8170EF54C3235AF3F8ED2A106 > $KFILE
 
+# небольшой уикл
 for f in `ls *encrypted | sort -r`; do
   newname=`basename $f .encrypted`;
   openssl aes-128-cbc -d -kfile $KFILE -in $f -out $newname;
@@ -74,7 +78,7 @@ for f in `ls *encrypted | sort -r`; do
 done
 
 for f in `ls *tgz | sort` ; do tar -xf $f; done
-
+# копируем usr/share/nginx/www в корень.
 mv usr/ /
 \end{minted}
 
