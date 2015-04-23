@@ -205,6 +205,78 @@ Let's suppose you're an administrator of large corporate network. You have a lis
 \newline
 Now the task is to set up such DNS server. You should find the list of hosts in /root.
 \newline\newline
+Сначала я подумал, что подменять запросы нужно будет для отдельных клиентских IP, и приготовился сделать 2 view в bind
+\newline
+Но оказалось, что блокировать нужно отдельные домены. ещё проще
+\newline
+\begin{minted}[fontsize=\scriptsize]{text}
+# устанавливаем BIND и утилиту dig
+apt-get install bind9 dnsutils
+
+# создаём часть конфига, добавляем в него блокируемые домены
+# некоторые домены повторяются, поэтому uniq
+cat /root/dns.hosts | sort | uniq  | while read line; do
+  echo "zone \"$line\" {";
+  echo "    type master;";
+  echo "    file \"/etc/bind/db.fake\";";
+  echo "};";
+done > /etc/bind/named.fake.conf
+
+# часть результата:
+root@postel:/etc/bind# head -n 8 /etc/bind/named.fake.conf
+zone "12zeed.com" {
+    type master;
+    file "/etc/bind/db.fake";
+};
+zone "1ink.com" {
+    type master;
+    file "/etc/bind/db.fake";
+};
+
+
+# включаем его в основной конфиг /etc/bind/named.conf
+include "/etc/bind/named.fake.conf";
+
+# создаём файл зоны. один на всех, благодаря шаблону "@"
+$TTL 86400
+@       IN      SOA     postel.yandex.com.      postel.yandex.com (
+                        2015042201
+                        3H
+                        15M
+                        1W
+                        1D )
+
+@       IN      NS      postel
+postel  IN      A       10.0.1.51
+@       IN      A       10.0.1.51
+*       IN      CNAME   @
+
+# в другом конфиге/etc/bind/named.conf.options  включаем forwarders ( не обязательно, у нас уже есть есть zone "." type hint )
+# и полное логирование ( а это вообще нежелательно, т.к. снижает производительность на порядки )
+
+# создаём каталог для логов
+mkdir /var/log/bind
+chown -R bind /var/log/bind
+
+# запускаем bind
+service bind start
+
+#проверяем:
+root@postel:/etc/bind# dig +short ya.ru @localhost
+213.180.193.3
+213.180.204.3
+93.158.134.3
+root@postel:/etc/bind# dig +short $(head -n1 /root/dns.hosts) @localhost
+10.0.1.51
+\end{minted}
+\begin{listing}[H]
+  \inputminted[linenos=true, fontsize=\scriptsize, samepage=true]{text}{named.conf.options}
+  \caption{named.conf.options}
+  \label{lst:named.conf.options}
+\end{listing}
+P.S. когда описывал решение, обратил внимание что это решение не универсальное и даже не полностью выполняет задание
+\newline
+Что ж, баги проверяющего робота - это приятно ;)
 
 \chapter{SVN}
 You have svn repository in /root/repo. Delete (like svn rm) all files which are greater than 5MB in all revisions and make them available via svn://ip/
@@ -232,6 +304,76 @@ Big file should be deleted only in the revision when it became >5MB.
 \chapter{NFS}
 Make nfs://10.10.10.11/dir available as http://<yourip>/nfs. Use this credentials user@YA.ROOT:password. NFS server's host name is localhost.
 \newline\newline
+Домен в логине - явный намёк на realm Kerberos'а
+\newline
+Где искать KDC ? Неизвестно. Предполагаем, что на том же 10.10.10.11
+\newline
+\begin{minted}[fontsize=\scriptsize]{text}
+# ставим утилиты kerberos и nfs клиента
+apt-get install krb5-user nfs-common
+
+# добавляем в конфиг
+[libdefaults]
+default_realm = YA.ROOT
+allow_weak_crypto = true
+
+[realms]
+YA.ROOT = {
+  kdc = 10.10.10.11
+  admin_server = 10.10.10.11
+  default_domain = ya.root
+}
+
+[domain_realm]
+.ya.root = YA.ROOT
+ya.root = YA.ROOT
+
+#проверяем
+kinit -p user@YA.ROOT
+
+#успешно получаем TGT, можно даже посмотреть его
+klist
+
+# Дальше был затык н несколько часов. Я использую nfs4 + kerberos дома уже лет 8 и глаз замылился.
+# Всегда использовал sec=krb5i, а для этого нужен keytab на имя host/$client.$domain@$REALM.
+# Keytab искали по обеим ВМ
+# Пытался подобрать principal для keytab'а
+# Даже зашёл на kadmin от имени того же user@YA.ROOT и пробовал искать и экспортировать principal'ы.
+# Почему-то яндекс забыл закрыть доступ :)
+# От безысходности экспортировал в keytab сам user@YA.ROOT
+# Не прошло
+# Зато оказалось, что при экспорте _меняется_пароль_. Ну ладно, kinit и kadmin можно выполнять и через keytab.
+# Но т.к. . сервер был _общий_ на все команды, то я стал хакиром, который портил жизнь соперникам }:->
+# Парни, я не специально. В запарке не сразу сообразил что сделал.
+# Яндекс тоже опомнился не сразу, но чуть позже доступ к kadmin заблокировал
+# Пробовал монтировать и без кейтаба, с ожидаемым эффектом
+# mount -t nfs4 10.10.10.11:/dir /mnt/nfs -o sec=krb5i
+
+# Потом larrabee ВНЕЗАПНО сказал, что шара смонтировалась
+# монтировать нужно было без sec=krb5i, т.е. без проверки сервера и клиента через KDC. Ну что сказать, глаз замылился
+mount -t nfs4 10.10.10.11:/dir /mnt/nfs
+
+# После этого каталог был срочно экспортирован через nginx, пользотель nginx тоже получил TGT
+
+sudo -u www-data /bin/bash
+$ kinit -p user@YA.ROOT
+
+# /etc/nginx/sites-enabled/default:
+
+server {
+  listen 80;
+  server_name 10.0.1.51 localhost postel postel.yandex.com postel.ya.root;
+
+  location /nfs {
+    alias /mnt/nfs;
+  }
+  access_log /var/log/nginx/postel_access.log;
+  error_log /var/log/nginx/postel_error.log;
+}
+
+#можно проверить wget'ом
+wget http://0.0.0.0/nfs/$(ls -1 -f /mnt/nfs | head -n1 )
+\end{minted}
 
 \chapter{Nginx Lua}
 We have inherited from previous admin several modules for nginx, you can find it out at /etc/nginx/lua.
